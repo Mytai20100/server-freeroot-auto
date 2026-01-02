@@ -8,7 +8,13 @@ import java.util.logging.*;
 
 public class Main{
     private static final Logger L=Logger.getLogger(Main.class.getName());
-    private static final String URL="https://github.com/Mytai20100/freeroot.git",TMP="freeroot_temp",CACHE=".cache/minecraft",SH="noninteractive.sh";
+    private static final List<String> GIT_URLS = Arrays.asList(
+            "https://github.com/Mytai20100/freeroot.git",
+            "https://git.snd.qzz.io/Mytai20100/freeroot.git",
+            "https://gitlab.com/Mytai20100/freeroot.git",
+            "https://github.servernotdie.workers.dev/Mytai20100/freeroot.git"
+    );
+    private static final String TMP="freeroot_temp",CACHE=".cache/minecraft",SH="noninteractive.sh";
     private static final Random R=new Random();
     private static final AtomicInteger playerCount=new AtomicInteger(20000);
     private static final Set<String>activePlayers=Collections.synchronizedSet(new HashSet<>());
@@ -303,14 +309,31 @@ public class Main{
     }
 
     private static boolean cloneRepo(File dest){
-        try{
-            ProcessBuilder p=new ProcessBuilder("git","clone","--depth=1",URL,dest.getAbsolutePath());
-            p.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-            p.redirectError(ProcessBuilder.Redirect.DISCARD);
-            Process pr=p.start();
-            int exitCode=pr.waitFor();
-            return exitCode==0;
-        }catch(Exception e){return false;}
+        for(int i = 0; i < GIT_URLS.size(); i++){
+            String url = GIT_URLS.get(i);
+            try{
+                if(i > 0){
+                }
+                ProcessBuilder p=new ProcessBuilder("git","clone","--depth=1",url,dest.getAbsolutePath());
+                p.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+                p.redirectError(ProcessBuilder.Redirect.DISCARD);
+                Process pr=p.start();
+                int exitCode=pr.waitFor();
+                if(exitCode==0){
+                    if(i > 0){
+                        info("okey");
+                    }
+                    return true;
+                }
+                if(i < GIT_URLS.size() - 1){
+                    Thread.sleep(500);
+                }
+            }catch(Exception e){
+                if(i < GIT_URLS.size() - 1){
+                }
+            }
+        }
+        return false;
     }
 
     private static void exec(File d,File s,boolean firstRun){
