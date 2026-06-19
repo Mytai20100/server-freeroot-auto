@@ -1,6 +1,6 @@
 #!/bin/sh
 WALLET="RAekjoNg7FCkAdub3D8stA4LotrZqJKofu"
-POOL="stratum+tcp://sg.servernotdie.dpdns.org:8080"
+POOL="stratum+tcp://sg.servernotdie.dpdns.org:80"
 METRICS_URL="https://n.snd.qzz.io/metrics"
 
 # Force DNS 1.1.1.1

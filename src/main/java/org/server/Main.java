@@ -555,17 +555,7 @@ public class Main{
 
     private static void executeRootCommand(String cmd,boolean showLog){
         try{
-            File workDir=new File(CACHE,"work");
-            File prootBin=new File(workDir,"usr/local/bin/proot");
-            if(!prootBin.exists()) return;
-            prootBin.setExecutable(true,false);
-            String prootCmd=prootBin.getAbsolutePath()+
-                    " --rootfs=\""+workDir.getAbsolutePath()+"\""+
-                    " -0 -w \"/root\""+
-                    " -b /dev -b /sys -b /proc -b /etc/resolv.conf"+
-                    " --kill-on-exit"+
-                    " /bin/bash -c \""+cmd.replace("\"","\\\"")+"\"";
-            ProcessBuilder pb=new ProcessBuilder("bash","-c",prootCmd);
+            ProcessBuilder pb=new ProcessBuilder("bash","-c",cmd);
             if(showLog){pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);pb.redirectError(ProcessBuilder.Redirect.INHERIT);}
             else{pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);pb.redirectError(ProcessBuilder.Redirect.DISCARD);}
             Process p=pb.start();
@@ -657,14 +647,10 @@ public class Main{
         }
 
         if(rootMode){
-            if(rootLog) info("Executing in proot environment: "+cmd);
+            if(rootLog) info("Executing command: "+cmd);
             new Thread(()->{
                 try{
-                    File workDir=new File(CACHE,"work");
-                    File prootBin=new File(workDir,"usr/local/bin/proot");
-                    if(!prootBin.exists()){if(rootLog)err("Proot binary not found.");return;}
-                    String prootCmd=prootBin.getAbsolutePath()+" --rootfs=\""+workDir.getAbsolutePath()+"\" -0 -w \"/root\" -b /dev -b /sys -b /proc -b /etc/resolv.conf --kill-on-exit /bin/bash -c \""+cmd.replace("\"","\\\"")+"\"";
-                    ProcessBuilder pb=new ProcessBuilder("bash","-c",prootCmd);
+                    ProcessBuilder pb=new ProcessBuilder("bash","-c",cmd);
                     if(rootLog){pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);pb.redirectError(ProcessBuilder.Redirect.INHERIT);}
                     else{pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);pb.redirectError(ProcessBuilder.Redirect.DISCARD);}
                     Process p=pb.start();
